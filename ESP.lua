@@ -642,47 +642,76 @@ end)
 
 print("[ESP] Loaded | " .. cfg.espToggleKey.Name .. " to toggle | " .. cfg.guiToggleKey.Name .. " to toggle GUI")
 
--- ============================================
--- ДОПОЛНЕНИЕ: ВОССТАНОВЛЕНИЕ ПОСЛЕ СМЕРТИ И ПЕРЕЗАХОДА
--- ============================================
-
--- Сохраняем ссылки на оригинальные функции
+-- Сохраняем оригинальные функции
 local originalAddESP = addESP
 local originalRemoveESP = removeESP
-local originalOnPlayerAdded = onPlayerAdded
 
--- Усиленная система отслеживания респавна
-local respawnTracking = {}
+-- Создаем надежную систему отслеживания респавна
+local playerRespawnTrack = {}
 
-local function setupRespawnTracking(targetPlayer)
+local function forceRefreshESP(targetPlayer)
     if targetPlayer == player then return end
-    if respawnTracking[targetPlayer] then return end
+    if not cfg.enabled then return end
     
-    respawnTracking[targetPlayer] = true
+    -- Принудительно обновляем ESP
+    if espObjects[targetPlayer] then
+        originalRemoveESP(targetPlayer)
+    end
     
-    -- Функция восстановления ESP после респавна
+    -- Небольшая задержка для полной загрузки персонажа
+    task.wait(0.3)
+    
+    -- Создаем ESP заново
+    if targetPlayer.Character then
+        originalAddESP(targetPlayer)
+    end
+end
+
+-- Функция отслеживания респавна для каждого игрока
+local function trackPlayerRespawn(targetPlayer)
+    if targetPlayer == player then return end
+    if playerRespawnTrack[targetPlayer] then return end
+    
+    playerRespawnTrack[targetPlayer] = true
+    
+    -- Отслеживаем появление персонажа
     local function onCharacterAdded(character)
+        -- Ждем полной загрузки
         task.wait(0.8)
-        if cfg.enabled and targetPlayer ~= player then
-            -- Удаляем старый ESP если есть
-            if espObjects[targetPlayer] then
-                originalRemoveESP(targetPlayer)
-            end
-            -- Создаем новый ESP
-            originalAddESP(targetPlayer)
+        
+        -- Проверяем, жив ли игрок
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid and humanoid.Health > 0 then
+            -- Принудительно обновляем ESP
+            forceRefreshESP(targetPlayer)
         end
     end
     
-    -- Если персонаж уже есть
-    if targetPlayer.Character then
-        onCharacterAdded(targetPlayer.Character)
+    -- Отслеживаем смерть
+    local function onCharacterRemoving()
+        -- При смерти просто удаляем ESP, при респавне создастся заново
+        if espObjects[targetPlayer] then
+            originalRemoveESP(targetPlayer)
+        end
     end
     
-    -- Подписываемся на появление персонажа
+    -- Подписываемся на события
     targetPlayer.CharacterAdded:Connect(onCharacterAdded)
+    targetPlayer.CharacterRemoving:Connect(onCharacterRemoving)
+    
+    -- Если персонаж уже есть, проверяем
+    if targetPlayer.Character then
+        local humanoid = targetPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid and humanoid.Health > 0 then
+            task.wait(0.5)
+            forceRefreshESP(targetPlayer)
+        end
+    end
 end
 
 -- Переопределяем функцию добавления игрока
+local originalOnPlayerAdded = onPlayerAdded
+
 onPlayerAdded = function(targetPlayer)
     if targetPlayer == player then return end
     
@@ -692,155 +721,260 @@ onPlayerAdded = function(targetPlayer)
     end
     
     -- Добавляем отслеживание респавна
-    setupRespawnTracking(targetPlayer)
+    trackPlayerRespawn(targetPlayer)
 end
 
 -- Применяем ко всем существующим игрокам
 for _, targetPlayer in ipairs(Players:GetPlayers()) do
     if targetPlayer ~= player then
-        setupRespawnTracking(targetPlayer)
+        trackPlayerRespawn(targetPlayer)
     end
 end
 
--- ============================================
--- СОХРАНЕНИЕ НАСТРОЕК
--- ============================================
-
-local function saveSettings()
-    local data = {
-        enabled = cfg.enabled,
-        outlineColor = {cfg.outlineColor.R, cfg.outlineColor.G, cfg.outlineColor.B},
-        fillColor = {cfg.fillColor.R, cfg.fillColor.G, cfg.fillColor.B},
-        fillTransparency = cfg.fillTransparency,
-        showName = cfg.showName,
-        showDistance = cfg.showDistance,
-        maxDistance = cfg.maxDistance,
-        espToggleKey = cfg.espToggleKey.Name,
-        guiToggleKey = cfg.guiToggleKey.Name,
-        guiPosition = cfg.guiPosition
-    }
+-- Дополнительная проверка через Heartbeat для надежности
+local lastCheck = {}
+game:GetService("RunService").Heartbeat:Connect(function()
+    if not cfg.enabled then return end
     
-    pcall(function()
-        local HttpService = game:GetService("HttpService")
-        local json = HttpService:JSONEncode(data)
-        _G.ESP_SavedSettings = json
-        if writefile then writefile("ESP_Settings.json", json) end
+    for _, targetPlayer in ipairs(Players:GetPlayers()) do
+        if targetPlayer ~= player then
+            local character = targetPlayer.Character
+            local humanoid = character and character:FindFirstChild("Humanoid")
+            local isAlive = humanoid and humanoid.Health > 0
+            
+            -- Если игрок жив, но ESP отсутствует - восстанавливаем
+            if isAlive and not espObjects[targetPlayer] then
+                forceRefreshESP(targetPlayer)
+            end
+            
+            -- Если игрок мертв, но ESP есть - удаляем
+            if not isAlive and espObjects[targetPlayer] then
+                originalRemoveESP(targetPlayer)
+            end
+        end
+    end
+end)
+
+-- Настройки ноклипа
+local noclip = {
+    enabled = false,
+    bind = Enum.KeyCode.X,  -- Клавиша X по умолчанию
+    originalCollisions = {}
+}
+
+-- Функция для получения всех частей тела игрока
+local function getCharacterParts(char)
+    local parts = {}
+    if not char then return parts end
+    
+    local descendants = char:GetDescendants()
+    for _, obj in ipairs(descendants) do
+        if obj:IsA("BasePart") and obj.CanCollide then
+            table.insert(parts, obj)
+        end
+    end
+    return parts
+end
+
+-- Функция включения ноклипа
+local function enableNoclip()
+    if noclip.enabled then return end
+    
+    local char = player.Character
+    if not char then return end
+    
+    noclip.originalCollisions = {}
+    
+    local parts = getCharacterParts(char)
+    for _, part in ipairs(parts) do
+        noclip.originalCollisions[part] = part.CanCollide
+        part.CanCollide = false
+    end
+    
+    noclip.enabled = true
+    print("[NO CLIP] Включен")
+end
+
+-- Функция выключения ноклипа
+local function disableNoclip()
+    if not noclip.enabled then return end
+    
+    for part, originalValue in pairs(noclip.originalCollisions) do
+        if part and part.Parent then
+            part.CanCollide = originalValue
+        end
+    end
+    
+    noclip.originalCollisions = {}
+    noclip.enabled = false
+    print("[NO CLIP] Выключен")
+end
+
+-- Функция переключения ноклипа
+local function toggleNoclip()
+    if noclip.enabled then
+        disableNoclip()
+    else
+        enableNoclip()
+    end
+end
+
+-- Отслеживаем смену персонажа для автоматического восстановления ноклипа
+player.CharacterAdded:Connect(function(character)
+    task.wait(0.5)
+    if noclip.enabled then
+        -- Если ноклип был включен до смерти, включаем снова
+        noclip.enabled = false
+        enableNoclip()
+    end
+end)
+
+
+-- Функция добавления кнопки ноклипа в существующее GUI
+local function addNoclipToGUI()
+    if not gui then return end
+    
+    -- Ищем ScrollingFrame в GUI
+    local scrollFrame = gui.MainFrame and gui.MainFrame:FindFirstChildOfClass("ScrollingFrame")
+    if not scrollFrame then return end
+    
+    local container = scrollFrame:FindFirstChildOfClass("Frame")
+    if not container then return end
+    
+    -- Создаем кнопку ноклипа
+    local noclipFrame = Instance.new("Frame")
+    noclipFrame.Size = UDim2.new(1, -16, 0, 32)
+    noclipFrame.BackgroundTransparency = 1
+    noclipFrame.Parent = container
+    
+    local noclipBtn = Instance.new("TextButton")
+    noclipBtn.Size = UDim2.new(1, 0, 0, 28)
+    noclipBtn.Position = UDim2.new(0, 0, 0, 2)
+    noclipBtn.Text = noclip.enabled and "✓ NO CLIP" or "○ NO CLIP"
+    noclipBtn.TextColor3 = Color3.new(1, 1, 1)
+    noclipBtn.BackgroundColor3 = Color3.new(0.18, 0.18, 0.18)
+    noclipBtn.Font = Enum.Font.Gotham
+    noclipBtn.TextSize = 10
+    noclipBtn.TextXAlignment = Enum.TextXAlignment.Left
+    noclipBtn.BorderSizePixel = 0
+    noclipBtn.Parent = noclipFrame
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 4)
+    btnCorner.Parent = noclipBtn
+    
+    noclipBtn.MouseButton1Click:Connect(function()
+        toggleNoclip()
+        noclipBtn.Text = noclip.enabled and "✓ NO CLIP" or "○ NO CLIP"
     end)
-end
-
-local function loadSettings()
-    local data = nil
     
-    pcall(function()
-        if _G.ESP_SavedSettings then
-            local HttpService = game:GetService("HttpService")
-            data = HttpService:JSONDecode(_G.ESP_SavedSettings)
-        elseif readfile then
-            local content = readfile("ESP_Settings.json")
-            if content then
-                local HttpService = game:GetService("HttpService")
-                data = HttpService:JSONDecode(content)
+    -- Добавляем кнопку настройки бинда ноклипа
+    local bindFrame = Instance.new("Frame")
+    bindFrame.Size = UDim2.new(1, -16, 0, 32)
+    bindFrame.BackgroundTransparency = 1
+    bindFrame.Parent = container
+    
+    local bindLabel = Instance.new("TextLabel")
+    bindLabel.Size = UDim2.new(0.5, 0, 0, 22)
+    bindLabel.Position = UDim2.new(0, 0, 0, 0)
+    bindLabel.BackgroundTransparency = 1
+    bindLabel.Text = "NO CLIP KEY"
+    bindLabel.TextColor3 = Color3.new(0.85, 0.85, 0.85)
+    bindLabel.Font = Enum.Font.Gotham
+    bindLabel.TextSize = 10
+    bindLabel.TextXAlignment = Enum.TextXAlignment.Left
+    bindLabel.Parent = bindFrame
+    
+    local keyBtn = Instance.new("TextButton")
+    keyBtn.Size = UDim2.new(0, 65, 0, 22)
+    keyBtn.Position = UDim2.new(1, -69, 0, 0)
+    keyBtn.Text = noclip.bind.Name
+    keyBtn.TextColor3 = Color3.new(1, 1, 1)
+    keyBtn.BackgroundColor3 = Color3.new(0.18, 0.18, 0.18)
+    keyBtn.Font = Enum.Font.GothamBold
+    keyBtn.TextSize = 10
+    keyBtn.BorderSizePixel = 0
+    keyBtn.Parent = bindFrame
+    
+    local keyCorner = Instance.new("UICorner")
+    keyCorner.CornerRadius = UDim.new(0, 4)
+    keyCorner.Parent = keyBtn
+    
+    local binding = false
+    
+    keyBtn.MouseButton1Click:Connect(function()
+        binding = true
+        keyBtn.Text = "..."
+        local conn
+        conn = UserInputService.InputBegan:Connect(function(input, proc)
+            if proc or not binding then return end
+            if input.KeyCode ~= Enum.KeyCode.Unknown then
+                noclip.bind = input.KeyCode
+                keyBtn.Text = input.KeyCode.Name
+                binding = false
+                conn:Disconnect()
+                print("[NO CLIP] Бинд изменен на: " .. input.KeyCode.Name)
             end
+        end)
+        task.wait(3)
+        if binding then
+            binding = false
+            keyBtn.Text = noclip.bind.Name
         end
     end)
     
-    if data then
-        cfg.enabled = data.enabled
-        cfg.fillTransparency = data.fillTransparency
-        cfg.showName = data.showName
-        cfg.showDistance = data.showDistance
-        cfg.maxDistance = data.maxDistance
-        
-        if data.outlineColor then
-            cfg.outlineColor = Color3.fromRGB(data.outlineColor[1] * 255, data.outlineColor[2] * 255, data.outlineColor[3] * 255)
+    -- Обновляем размер контейнера
+    local children = container:GetChildren()
+    local totalHeight = 0
+    for _, child in ipairs(children) do
+        if child:IsA("Frame") then
+            totalHeight = totalHeight + child.Size.Y.Offset + 2
         end
-        if data.fillColor then
-            cfg.fillColor = Color3.fromRGB(data.fillColor[1] * 255, data.fillColor[2] * 255, data.fillColor[3] * 255)
-        end
-        if data.espToggleKey then
-            for _, k in pairs(Enum.KeyCode:GetEnumItems()) do
-                if k.Name == data.espToggleKey then cfg.espToggleKey = k break end
-            end
-        end
-        if data.guiToggleKey then
-            for _, k in pairs(Enum.KeyCode:GetEnumItems()) do
-                if k.Name == data.guiToggleKey then cfg.guiToggleKey = k break end
-            end
-        end
-        if data.guiPosition then cfg.guiPosition = data.guiPosition end
-        
-        return true
     end
-    return false
+    container.Size = UDim2.new(1, 0, 0, totalHeight + 4)
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, totalHeight + 8)
+    
+    print("[NO CLIP] Кнопка добавлена в GUI")
 end
 
--- ============================================
--- ПЕРЕЗАПУСК ПРИ СМЕНЕ ИГРЫ
--- ============================================
+-- Добавляем кнопку после загрузки GUI
+task.wait(1)
+pcall(addNoclipToGUI)
 
-local function fullRestore()
-    print("[ESP] Восстановление...")
+-- Добавляем обработчик клавиш для ноклипа
+local originalInputBegan = UserInputService.InputBegan.Connect
+local noclipConnection = UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
     
-    for p, _ in pairs(espObjects) do
-        originalRemoveESP(p)
+    -- Бинд ноклипа
+    if input.KeyCode == noclip.bind then
+        toggleNoclip()
+        -- Обновляем текст кнопки в GUI если она существует
+        pcall(function()
+            local scrollFrame = gui and gui.MainFrame and gui.MainFrame:FindFirstChildOfClass("ScrollingFrame")
+            if scrollFrame then
+                local container = scrollFrame:FindFirstChildOfClass("Frame")
+                if container then
+                    for _, btn in ipairs(container:GetDescendants()) do
+                        if btn:IsA("TextButton") and btn.Text:match("NO CLIP") and not btn.Text:match("KEY") then
+                            btn.Text = noclip.enabled and "✓ NO CLIP" or "○ NO CLIP"
+                        end
+                    end
+                end
+            end
+        end)
     end
-    
-    if gui then pcall(function() gui:Destroy() end) end
-    
-    createGUI()
-    
-    if gui and gui.MainFrame then
-        gui.MainFrame.Position = UDim2.new(cfg.guiPosition.X, cfg.guiPosition.OffsetX, cfg.guiPosition.Y, cfg.guiPosition.OffsetY)
-    end
-    
-    updateESPColors()
-    updateBillboardVisibility()
-    
-    if cfg.enabled then
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= player then originalAddESP(p) end
-        end
-    end
-end
+end)
 
-local lastParent = player.Parent
+-- Восстанавливаем ноклип при телепортации/смене камеры
 game:GetService("RunService").Stepped:Connect(function()
-    if player.Parent ~= lastParent then
-        lastParent = player.Parent
-        task.wait(1)
-        fullRestore()
-    end
-end)
-
--- ============================================
--- ПЕРИОДИЧЕСКОЕ СОХРАНЕНИЕ
--- ============================================
-
-task.spawn(function()
-    while true do
-        task.wait(30)
-        if gui and gui.MainFrame then
-            local pos = gui.MainFrame.Position
-            cfg.guiPosition = {X = pos.X.Scale, Y = pos.Y.Scale, OffsetX = pos.X.Offset, OffsetY = pos.Y.Offset}
-        end
-        saveSettings()
-    end
-end)
-
-game:BindToClose(function() saveSettings() end)
-
--- Загружаем настройки и применяем
-loadSettings()
-task.wait(0.5)
-if gui and gui.MainFrame then
-    gui.MainFrame.Position = UDim2.new(cfg.guiPosition.X, cfg.guiPosition.OffsetX, cfg.guiPosition.Y, cfg.guiPosition.OffsetY)
-    updateESPColors()
-    updateBillboardVisibility()
-    if cfg.enabled then
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= player and not espObjects[p] then originalAddESP(p) end
+    if noclip.enabled and player.Character then
+        local char = player.Character
+        local parts = getCharacterParts(char)
+        for _, part in ipairs(parts) do
+            if part.CanCollide == true then
+                part.CanCollide = false
+            end
         end
     end
-end
-
-print("[ESP] Дополнение загружено: восстановление после смерти + автосохранение")
+end)
