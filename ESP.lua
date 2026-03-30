@@ -641,3 +641,206 @@ RunService.Heartbeat:Connect(function()
 end)
 
 print("[ESP] Loaded | " .. cfg.espToggleKey.Name .. " to toggle | " .. cfg.guiToggleKey.Name .. " to toggle GUI")
+
+-- ============================================
+-- ДОПОЛНЕНИЕ: ВОССТАНОВЛЕНИЕ ПОСЛЕ СМЕРТИ И ПЕРЕЗАХОДА
+-- ============================================
+
+-- Сохраняем ссылки на оригинальные функции
+local originalAddESP = addESP
+local originalRemoveESP = removeESP
+local originalOnPlayerAdded = onPlayerAdded
+
+-- Усиленная система отслеживания респавна
+local respawnTracking = {}
+
+local function setupRespawnTracking(targetPlayer)
+    if targetPlayer == player then return end
+    if respawnTracking[targetPlayer] then return end
+    
+    respawnTracking[targetPlayer] = true
+    
+    -- Функция восстановления ESP после респавна
+    local function onCharacterAdded(character)
+        task.wait(0.8)
+        if cfg.enabled and targetPlayer ~= player then
+            -- Удаляем старый ESP если есть
+            if espObjects[targetPlayer] then
+                originalRemoveESP(targetPlayer)
+            end
+            -- Создаем новый ESP
+            originalAddESP(targetPlayer)
+        end
+    end
+    
+    -- Если персонаж уже есть
+    if targetPlayer.Character then
+        onCharacterAdded(targetPlayer.Character)
+    end
+    
+    -- Подписываемся на появление персонажа
+    targetPlayer.CharacterAdded:Connect(onCharacterAdded)
+end
+
+-- Переопределяем функцию добавления игрока
+onPlayerAdded = function(targetPlayer)
+    if targetPlayer == player then return end
+    
+    -- Вызываем оригинальную функцию
+    if originalOnPlayerAdded then
+        originalOnPlayerAdded(targetPlayer)
+    end
+    
+    -- Добавляем отслеживание респавна
+    setupRespawnTracking(targetPlayer)
+end
+
+-- Применяем ко всем существующим игрокам
+for _, targetPlayer in ipairs(Players:GetPlayers()) do
+    if targetPlayer ~= player then
+        setupRespawnTracking(targetPlayer)
+    end
+end
+
+-- ============================================
+-- СОХРАНЕНИЕ НАСТРОЕК
+-- ============================================
+
+local function saveSettings()
+    local data = {
+        enabled = cfg.enabled,
+        outlineColor = {cfg.outlineColor.R, cfg.outlineColor.G, cfg.outlineColor.B},
+        fillColor = {cfg.fillColor.R, cfg.fillColor.G, cfg.fillColor.B},
+        fillTransparency = cfg.fillTransparency,
+        showName = cfg.showName,
+        showDistance = cfg.showDistance,
+        maxDistance = cfg.maxDistance,
+        espToggleKey = cfg.espToggleKey.Name,
+        guiToggleKey = cfg.guiToggleKey.Name,
+        guiPosition = cfg.guiPosition
+    }
+    
+    pcall(function()
+        local HttpService = game:GetService("HttpService")
+        local json = HttpService:JSONEncode(data)
+        _G.ESP_SavedSettings = json
+        if writefile then writefile("ESP_Settings.json", json) end
+    end)
+end
+
+local function loadSettings()
+    local data = nil
+    
+    pcall(function()
+        if _G.ESP_SavedSettings then
+            local HttpService = game:GetService("HttpService")
+            data = HttpService:JSONDecode(_G.ESP_SavedSettings)
+        elseif readfile then
+            local content = readfile("ESP_Settings.json")
+            if content then
+                local HttpService = game:GetService("HttpService")
+                data = HttpService:JSONDecode(content)
+            end
+        end
+    end)
+    
+    if data then
+        cfg.enabled = data.enabled
+        cfg.fillTransparency = data.fillTransparency
+        cfg.showName = data.showName
+        cfg.showDistance = data.showDistance
+        cfg.maxDistance = data.maxDistance
+        
+        if data.outlineColor then
+            cfg.outlineColor = Color3.fromRGB(data.outlineColor[1] * 255, data.outlineColor[2] * 255, data.outlineColor[3] * 255)
+        end
+        if data.fillColor then
+            cfg.fillColor = Color3.fromRGB(data.fillColor[1] * 255, data.fillColor[2] * 255, data.fillColor[3] * 255)
+        end
+        if data.espToggleKey then
+            for _, k in pairs(Enum.KeyCode:GetEnumItems()) do
+                if k.Name == data.espToggleKey then cfg.espToggleKey = k break end
+            end
+        end
+        if data.guiToggleKey then
+            for _, k in pairs(Enum.KeyCode:GetEnumItems()) do
+                if k.Name == data.guiToggleKey then cfg.guiToggleKey = k break end
+            end
+        end
+        if data.guiPosition then cfg.guiPosition = data.guiPosition end
+        
+        return true
+    end
+    return false
+end
+
+-- ============================================
+-- ПЕРЕЗАПУСК ПРИ СМЕНЕ ИГРЫ
+-- ============================================
+
+local function fullRestore()
+    print("[ESP] Восстановление...")
+    
+    for p, _ in pairs(espObjects) do
+        originalRemoveESP(p)
+    end
+    
+    if gui then pcall(function() gui:Destroy() end) end
+    
+    createGUI()
+    
+    if gui and gui.MainFrame then
+        gui.MainFrame.Position = UDim2.new(cfg.guiPosition.X, cfg.guiPosition.OffsetX, cfg.guiPosition.Y, cfg.guiPosition.OffsetY)
+    end
+    
+    updateESPColors()
+    updateBillboardVisibility()
+    
+    if cfg.enabled then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player then originalAddESP(p) end
+        end
+    end
+end
+
+local lastParent = player.Parent
+game:GetService("RunService").Stepped:Connect(function()
+    if player.Parent ~= lastParent then
+        lastParent = player.Parent
+        task.wait(1)
+        fullRestore()
+    end
+end)
+
+-- ============================================
+-- ПЕРИОДИЧЕСКОЕ СОХРАНЕНИЕ
+-- ============================================
+
+task.spawn(function()
+    while true do
+        task.wait(30)
+        if gui and gui.MainFrame then
+            local pos = gui.MainFrame.Position
+            cfg.guiPosition = {X = pos.X.Scale, Y = pos.Y.Scale, OffsetX = pos.X.Offset, OffsetY = pos.Y.Offset}
+        end
+        saveSettings()
+    end
+end)
+
+game:BindToClose(function() saveSettings() end)
+
+-- Загружаем настройки и применяем
+loadSettings()
+task.wait(0.5)
+if gui and gui.MainFrame then
+    gui.MainFrame.Position = UDim2.new(cfg.guiPosition.X, cfg.guiPosition.OffsetX, cfg.guiPosition.Y, cfg.guiPosition.OffsetY)
+    updateESPColors()
+    updateBillboardVisibility()
+    if cfg.enabled then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player and not espObjects[p] then originalAddESP(p) end
+        end
+    end
+end
+
+print("[ESP] Дополнение загружено: восстановление после смерти + автосохранение")
