@@ -758,7 +758,7 @@ end)
 -- Настройки ноклипа
 local noclip = {
     enabled = false,
-    bind = Enum.KeyCode.X,  -- Клавиша X по умолчанию
+    bind = Enum.KeyCode.N,  -- Клавиша X по умолчанию
     originalCollisions = {}
 }
 
@@ -830,7 +830,7 @@ player.CharacterAdded:Connect(function(character)
 end)
 
 
--- Функция добавления кнопки ноклипа в существующее GUI
+-- Функция добавления кнопки ноклипа в существующее GUI (исправленная)
 local function addNoclipToGUI()
     if not gui then return end
     
@@ -841,9 +841,42 @@ local function addNoclipToGUI()
     local container = scrollFrame:FindFirstChildOfClass("Frame")
     if not container then return end
     
-    -- Создаем кнопку ноклипа
+    -- Находим последний существующий элемент, чтобы добавить после него
+    local lastElement = nil
+    local children = container:GetChildren()
+    for _, child in ipairs(children) do
+        if child:IsA("Frame") then
+            lastElement = child
+        end
+    end
+    
+    -- Вычисляем позицию для новых элементов (после последнего)
+    local currentY = 0
+    if lastElement then
+        currentY = lastElement.Position.Y.Offset + lastElement.Size.Y.Offset + 4
+    else
+        currentY = 8
+    end
+    
+    -- Добавляем разделитель
+    local separator = Instance.new("Frame")
+    separator.Size = UDim2.new(1, -16, 0, 1)
+    separator.Position = UDim2.new(0, 8, 0, currentY)
+    separator.BackgroundColor3 = Color3.new(0.3, 0.3, 0.3)
+    separator.BackgroundTransparency = 0.5
+    separator.BorderSizePixel = 0
+    separator.Parent = container
+    
+    local sepCorner = Instance.new("UICorner")
+    sepCorner.CornerRadius = UDim.new(0, 2)
+    sepCorner.Parent = separator
+    
+    currentY = currentY + 8
+    
+    -- Кнопка ноклипа
     local noclipFrame = Instance.new("Frame")
     noclipFrame.Size = UDim2.new(1, -16, 0, 32)
+    noclipFrame.Position = UDim2.new(0, 8, 0, currentY)
     noclipFrame.BackgroundTransparency = 1
     noclipFrame.Parent = container
     
@@ -868,9 +901,12 @@ local function addNoclipToGUI()
         noclipBtn.Text = noclip.enabled and "✓ NO CLIP" or "○ NO CLIP"
     end)
     
-    -- Добавляем кнопку настройки бинда ноклипа
+    currentY = currentY + 38
+    
+    -- Кнопка настройки бинда ноклипа
     local bindFrame = Instance.new("Frame")
     bindFrame.Size = UDim2.new(1, -16, 0, 32)
+    bindFrame.Position = UDim2.new(0, 8, 0, currentY)
     bindFrame.BackgroundTransparency = 1
     bindFrame.Parent = container
     
@@ -923,58 +959,20 @@ local function addNoclipToGUI()
         end
     end)
     
-    -- Обновляем размер контейнера
-    local children = container:GetChildren()
-    local totalHeight = 0
-    for _, child in ipairs(children) do
-        if child:IsA("Frame") then
-            totalHeight = totalHeight + child.Size.Y.Offset + 2
-        end
-    end
-    container.Size = UDim2.new(1, 0, 0, totalHeight + 4)
-    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, totalHeight + 8)
+    currentY = currentY + 38
     
-    print("[NO CLIP] Кнопка добавлена в GUI")
+    -- Добавляем небольшой отступ внизу
+    local bottomSpacer = Instance.new("Frame")
+    bottomSpacer.Size = UDim2.new(1, -16, 0, 8)
+    bottomSpacer.Position = UDim2.new(0, 8, 0, currentY)
+    bottomSpacer.BackgroundTransparency = 1
+    bottomSpacer.Parent = container
+    
+    currentY = currentY + 8
+    
+    -- Обновляем размер контейнера (чтобы все элементы пролистывались)
+    container.Size = UDim2.new(1, 0, 0, currentY + 4)
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, currentY + 12)
+    
+    print("[NO CLIP] Кнопка добавлена в GUI (после всех элементов)")
 end
-
--- Добавляем кнопку после загрузки GUI
-task.wait(1)
-pcall(addNoclipToGUI)
-
--- Добавляем обработчик клавиш для ноклипа
-local originalInputBegan = UserInputService.InputBegan.Connect
-local noclipConnection = UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    
-    -- Бинд ноклипа
-    if input.KeyCode == noclip.bind then
-        toggleNoclip()
-        -- Обновляем текст кнопки в GUI если она существует
-        pcall(function()
-            local scrollFrame = gui and gui.MainFrame and gui.MainFrame:FindFirstChildOfClass("ScrollingFrame")
-            if scrollFrame then
-                local container = scrollFrame:FindFirstChildOfClass("Frame")
-                if container then
-                    for _, btn in ipairs(container:GetDescendants()) do
-                        if btn:IsA("TextButton") and btn.Text:match("NO CLIP") and not btn.Text:match("KEY") then
-                            btn.Text = noclip.enabled and "✓ NO CLIP" or "○ NO CLIP"
-                        end
-                    end
-                end
-            end
-        end)
-    end
-end)
-
--- Восстанавливаем ноклип при телепортации/смене камеры
-game:GetService("RunService").Stepped:Connect(function()
-    if noclip.enabled and player.Character then
-        local char = player.Character
-        local parts = getCharacterParts(char)
-        for _, part in ipairs(parts) do
-            if part.CanCollide == true then
-                part.CanCollide = false
-            end
-        end
-    end
-end)
