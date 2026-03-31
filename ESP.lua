@@ -732,8 +732,7 @@ for _, targetPlayer in ipairs(Players:GetPlayers()) do
 end
 
 -- Дополнительная проверка через Heartbeat для надежности
-local lastCheck = {}
-game:GetService("RunService").Heartbeat:Connect(function()
+RunService.Heartbeat:Connect(function()
     if not cfg.enabled then return end
     
     for _, targetPlayer in ipairs(Players:GetPlayers()) do
@@ -754,7 +753,5 @@ game:GetService("RunService").Heartbeat:Connect(function()
         end
     end
 end)
-    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, currentY + 12)
-    
-    print("[NO CLIP] Кнопка добавлена в GUI (после всех элементов)")
-end
+
+print("[ESP] ESP fully loaded | Players will be highlighted after respawn")
