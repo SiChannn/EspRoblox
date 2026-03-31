@@ -624,6 +624,7 @@ end
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(onPlayerRemoving)
 
+-- Первый Heartbeat для обновления ESP
 RunService.Heartbeat:Connect(function()
     if not cfg.enabled then return end
     
@@ -653,53 +654,41 @@ local function forceRefreshESP(targetPlayer)
     if targetPlayer == player then return end
     if not cfg.enabled then return end
     
-    -- Принудительно обновляем ESP
     if espObjects[targetPlayer] then
         originalRemoveESP(targetPlayer)
     end
     
-    -- Небольшая задержка для полной загрузки персонажа
     task.wait(0.3)
     
-    -- Создаем ESP заново
     if targetPlayer.Character then
         originalAddESP(targetPlayer)
     end
 end
 
--- Функция отслеживания респавна для каждого игрока
 local function trackPlayerRespawn(targetPlayer)
     if targetPlayer == player then return end
     if playerRespawnTrack[targetPlayer] then return end
     
     playerRespawnTrack[targetPlayer] = true
     
-    -- Отслеживаем появление персонажа
     local function onCharacterAdded(character)
-        -- Ждем полной загрузки
         task.wait(0.8)
         
-        -- Проверяем, жив ли игрок
         local humanoid = character:FindFirstChild("Humanoid")
         if humanoid and humanoid.Health > 0 then
-            -- Принудительно обновляем ESP
             forceRefreshESP(targetPlayer)
         end
     end
     
-    -- Отслеживаем смерть
     local function onCharacterRemoving()
-        -- При смерти просто удаляем ESP, при респавне создастся заново
         if espObjects[targetPlayer] then
             originalRemoveESP(targetPlayer)
         end
     end
     
-    -- Подписываемся на события
     targetPlayer.CharacterAdded:Connect(onCharacterAdded)
     targetPlayer.CharacterRemoving:Connect(onCharacterRemoving)
     
-    -- Если персонаж уже есть, проверяем
     if targetPlayer.Character then
         local humanoid = targetPlayer.Character:FindFirstChild("Humanoid")
         if humanoid and humanoid.Health > 0 then
@@ -715,12 +704,10 @@ local originalOnPlayerAdded = onPlayerAdded
 onPlayerAdded = function(targetPlayer)
     if targetPlayer == player then return end
     
-    -- Вызываем оригинальную функцию
     if originalOnPlayerAdded then
         originalOnPlayerAdded(targetPlayer)
     end
     
-    -- Добавляем отслеживание респавна
     trackPlayerRespawn(targetPlayer)
 end
 
@@ -731,7 +718,7 @@ for _, targetPlayer in ipairs(Players:GetPlayers()) do
     end
 end
 
--- Дополнительная проверка через Heartbeat для надежности
+-- Второй Heartbeat для проверки респавна
 RunService.Heartbeat:Connect(function()
     if not cfg.enabled then return end
     
@@ -741,12 +728,10 @@ RunService.Heartbeat:Connect(function()
             local humanoid = character and character:FindFirstChild("Humanoid")
             local isAlive = humanoid and humanoid.Health > 0
             
-            -- Если игрок жив, но ESP отсутствует - восстанавливаем
             if isAlive and not espObjects[targetPlayer] then
                 forceRefreshESP(targetPlayer)
             end
             
-            -- Если игрок мертв, но ESP есть - удаляем
             if not isAlive and espObjects[targetPlayer] then
                 originalRemoveESP(targetPlayer)
             end
